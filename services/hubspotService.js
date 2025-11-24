@@ -28,7 +28,7 @@ export async function handleHubSpotEvent(event) {
 
   // Route by object type
   switch (objectType) {
-    case "contacts":
+    case "companies":
       return createCustomerInNS(record);
 
     case "products":
@@ -41,3 +41,4 @@ export async function handleHubSpotEvent(event) {
       log("Unhandled object type:", objectType);
   }
 }
+
