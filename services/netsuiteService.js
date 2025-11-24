@@ -1,65 +1,78 @@
 import axios from 'axios';
 import crypto from 'crypto';
+import oauth1a from 'oauth-1.0a';
 import { log } from '../utils/logger.js';
 
+// Support default / named export depending on bundling
+const OAuth = oauth1a.default || oauth1a;
+
+// Create a reusable OAuth 1.0a client (HMAC-SHA256 to match Postman)
+function getOAuthClient() {
+  const { NS_CONSUMER_KEY, NS_CONSUMER_SECRET } = process.env;
+
+  if (!NS_CONSUMER_KEY || !NS_CONSUMER_SECRET) {
+    throw new Error('NetSuite consumer key/secret not set');
+  }
+
+  return new OAuth({
+    consumer: {
+      key: NS_CONSUMER_KEY,
+      secret: NS_CONSUMER_SECRET
+    },
+    signature_method: 'HMAC-SHA256', // IMPORTANT: match Postman
+    hash_function(baseString, key) {
+      return crypto
+        .createHmac('sha256', key)
+        .update(baseString)
+        .digest('base64');
+    }
+  });
+}
+
 /**
- * Build OAuth 1.0 signature for NetSuite TBA
+ * Build OAuth 1.0 Authorization header using oauth-1.0a (TBA)
  */
 function buildOAuthHeader(method, url) {
   const {
     NS_ACCOUNT_ID,
-    NS_CONSUMER_KEY,
-    NS_CONSUMER_SECRET,
     NS_TOKEN_ID,
     NS_TOKEN_SECRET
   } = process.env;
 
-  const oauthNonce = crypto.randomBytes(16).toString('hex');
-  const oauthTimestamp = Math.floor(Date.now() / 1000);
+  if (!NS_ACCOUNT_ID || !NS_TOKEN_ID || !NS_TOKEN_SECRET) {
+    throw new Error('NetSuite TBA environment variables not fully set');
+  }
 
-  const parsedUrl = new URL(url);
-  const baseUrl = parsedUrl.origin + parsedUrl.pathname; // IMPORTANT: no query parameters
+  const oauth = getOAuthClient();
 
-  // OAuth params required by NetSuite
-  const params = {
-    oauth_consumer_key: NS_CONSUMER_KEY,
-    oauth_token: NS_TOKEN_ID,
-    oauth_nonce: oauthNonce,
-    oauth_timestamp: oauthTimestamp,
-    oauth_signature_method: 'HMAC-SHA256',
-    oauth_version: '1.0'
+  const requestData = {
+    url,
+    method: method.toUpperCase()
+    // oauth-1.0a will include query params (script, deploy, etc.) from the URL
   };
 
-  // Alphabetically sorted parameters (MANDATORY for NetSuite)
-  const sorted = Object.keys(params)
-    .sort()
-    .map((key) => `${encodeURIComponent(key)}=${encodeURIComponent(params[key])}`)
-    .join('&');
+  const token = {
+    key: NS_TOKEN_ID,
+    secret: NS_TOKEN_SECRET
+  };
 
-  const baseString =
-    method.toUpperCase() +
-    '&' +
-    encodeURIComponent(baseUrl) +
-    '&' +
-    encodeURIComponent(sorted);
+  const authParams = oauth.authorize(requestData, token);
 
-  const signingKey = `${NS_CONSUMER_SECRET}&${NS_TOKEN_SECRET}`;
+  // NetSuite requires realm in the header
+  const headerParams = {
+    realm: NS_ACCOUNT_ID,
+    ...authParams
+  };
 
-  const oauthSignature = crypto
-    .createHmac('sha256', signingKey)
-    .update(baseString)
-    .digest('base64');
-
-  // Final OAuth header (MUST include realm)
   const header =
-    `OAuth realm="${NS_ACCOUNT_ID}", ` +
-    `oauth_consumer_key="${NS_CONSUMER_KEY}", ` +
-    `oauth_token="${NS_TOKEN_ID}", ` +
-    `oauth_nonce="${oauthNonce}", ` +
-    `oauth_timestamp="${oauthTimestamp}", ` +
-    `oauth_signature_method="HMAC-SHA256", ` +
-    `oauth_version="1.0", ` +
-    `oauth_signature="${encodeURIComponent(oauthSignature)}"`;
+    'OAuth ' +
+    Object.keys(headerParams)
+      .sort()
+      .map(
+        (key) =>
+          `${encodeURIComponent(key)}="${encodeURIComponent(headerParams[key])}"`
+      )
+      .join(', ');
 
   return header;
 }
@@ -100,9 +113,7 @@ async function postToNetSuite(url, payload) {
   }
 }
 
-/**
- * CREATE CUSTOMER FROM HUBSPOT COMPANY
- */
+// HubSpot Company → NetSuite Customer
 export async function createCustomerInNS(company) {
   log('Creating Customer in NetSuite:', company.id);
 
@@ -113,9 +124,7 @@ export async function createCustomerInNS(company) {
   return postToNetSuite(process.env.NS_RESTLET_CUSTOMER_URL, payload);
 }
 
-/**
- * CREATE ITEM FROM HUBSPOT PRODUCT (later)
- */
+// HubSpot Product → NetSuite Item (later)
 export async function createItemInNS(product) {
   log('Creating Item in NetSuite:', product.id);
 
@@ -126,9 +135,7 @@ export async function createItemInNS(product) {
   return postToNetSuite(process.env.NS_RESTLET_ITEM_URL, payload);
 }
 
-/**
- * CREATE SALES ORDER FROM HUBSPOT DEAL (later)
- */
+// HubSpot Deal → NetSuite Sales Order (later)
 export async function createSalesOrderInNS(deal) {
   log('Creating Sales Order in NetSuite:', deal.id);
 
