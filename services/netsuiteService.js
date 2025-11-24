@@ -1,8 +1,11 @@
 import axios from 'axios';
+import crypto from 'crypto';
 import { log } from '../utils/logger.js';
 
-// Build NetSuite auth headers (placeholder for now)
-function getNsHeaders() {
+/**
+ * Build OAuth 1.0 signature for NetSuite TBA
+ */
+function buildOAuthHeader(method, url) {
   const {
     NS_ACCOUNT_ID,
     NS_CONSUMER_KEY,
@@ -11,42 +14,85 @@ function getNsHeaders() {
     NS_TOKEN_SECRET
   } = process.env;
 
-  // If any of these are missing, just log and skip the call for now
-  if (!NS_ACCOUNT_ID || !NS_CONSUMER_KEY || !NS_CONSUMER_SECRET || !NS_TOKEN_ID || !NS_TOKEN_SECRET) {
-    log('NetSuite credentials not fully configured. Skipping NetSuite call.');
-    return null;
-  }
+  const oauthNonce = crypto.randomBytes(16).toString('hex');
+  const oauthTimestamp = Math.floor(Date.now() / 1000);
 
-  // Simple NLAuth-style header (you will later refine this or switch to OAuth1/TokenBased)
-  const header = `NLAuth nlauth_account=${NS_ACCOUNT_ID}, ` +
-                 `nlauth_consumer_key=${NS_CONSUMER_KEY}, ` +
-                 `nlauth_consumer_secret=${NS_CONSUMER_SECRET}, ` +
-                 `nlauth_token=${NS_TOKEN_ID}, ` +
-                 `nlauth_token_secret=${NS_TOKEN_SECRET}`;
-
-  return {
-    'Content-Type': 'application/json',
-    'Authorization': header
+  const params = {
+    oauth_consumer_key: NS_CONSUMER_KEY,
+    oauth_token: NS_TOKEN_ID,
+    oauth_nonce: oauthNonce,
+    oauth_timestamp: oauthTimestamp,
+    oauth_signature_method: 'HMAC-SHA256',
+    oauth_version: '1.0'
   };
+
+  const baseString =
+    method.toUpperCase() +
+    '&' +
+    encodeURIComponent(url) +
+    '&' +
+    encodeURIComponent(
+      Object.keys(params)
+        .sort()
+        .map((k) => `${k}=${params[k]}`)
+        .join('&')
+    );
+
+  const signingKey =
+    `${NS_CONSUMER_SECRET}&${NS_TOKEN_SECRET}`;
+
+  const signature = crypto
+    .createHmac('sha256', signingKey)
+    .update(baseString)
+    .digest('base64');
+
+  const header =
+    `OAuth ` +
+    `oauth_consumer_key="${NS_CONSUMER_KEY}", ` +
+    `oauth_token="${NS_TOKEN_ID}", ` +
+    `oauth_nonce="${oauthNonce}", ` +
+    `oauth_timestamp="${oauthTimestamp}", ` +
+    `oauth_signature_method="HMAC-SHA256", ` +
+    `oauth_version="1.0", ` +
+    `oauth_signature="${encodeURIComponent(signature)}"`;
+
+  return header;
 }
 
+/**
+ * POST to NetSuite RESTlet using OAuth 1.0 TBA
+ */
 async function postToNetSuite(url, payload) {
   if (!url) {
-    log('NetSuite RESTlet URL is not set. Skipping NetSuite call.');
+    log('NS_RESTLET_CUSTOMER_URL not set — skipping NS call.');
     return;
   }
 
-  const headers = getNsHeaders();
-  if (!headers) {
-    // getNsHeaders already logged the problem
-    return;
+  const authHeader = buildOAuthHeader('POST', url);
+
+  try {
+    const response = await axios.post(url, payload, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': authHeader,
+        'Cookie': `NS_ROUTING_VERSION=2` // required by some accounts
+      }
+    });
+
+    log('NetSuite RESTlet response:', response.data);
+    return response.data;
+
+  } catch (err) {
+    if (err.response) {
+      log('NetSuite error:', {
+        status: err.response.status,
+        data: err.response.data
+      });
+    } else {
+      log('NetSuite error:', err.message);
+    }
+    throw err;
   }
-
-  log('Posting to NetSuite RESTlet:', url, 'Payload keys:', Object.keys(payload || {}));
-
-  const response = await axios.post(url, payload, { headers });
-  log('NetSuite response:', response.data);
-  return response.data;
 }
 
 // HubSpot Company → NetSuite Customer
@@ -55,30 +101,21 @@ export async function createCustomerInNS(company) {
 
   const payload = {
     hubspotRecord: company
-    // later we will transform this into a simpler object for the RESTlet
   };
 
   return postToNetSuite(process.env.NS_RESTLET_CUSTOMER_URL, payload);
 }
 
-// HubSpot Product → NetSuite Item
+// HubSpot Product → Item (later)
 export async function createItemInNS(product) {
   log('Creating Item in NetSuite:', product.id);
-
-  const payload = {
-    hubspotRecord: product
-  };
-
+  const payload = { hubspotRecord: product };
   return postToNetSuite(process.env.NS_RESTLET_ITEM_URL, payload);
 }
 
-// HubSpot Deal → NetSuite Sales Order
+// HubSpot Deal → Sales Order (later)
 export async function createSalesOrderInNS(deal) {
   log('Creating Sales Order in NetSuite:', deal.id);
-
-  const payload = {
-    hubspotRecord: deal
-  };
-
+  const payload = { hubspotRecord: deal };
   return postToNetSuite(process.env.NS_RESTLET_SALESORDER_URL, payload);
 }
