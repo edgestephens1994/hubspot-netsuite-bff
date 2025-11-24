@@ -1,50 +1,84 @@
 import axios from 'axios';
 import { log } from '../utils/logger.js';
 
-const NS_HEADERS = {
-  'Content-Type': 'application/json',
-  'Authorization': `NLAuth nlauth_account=${process.env.NS_ACCOUNT_ID}, 
-                    nlauth_consumer_key=${process.env.NS_CONSUMER_KEY}, 
-                    nlauth_consumer_secret=${process.env.NS_CONSUMER_SECRET}, 
-                    nlauth_token=${process.env.NS_TOKEN_ID}, 
-                    nlauth_token_secret=${process.env.NS_TOKEN_SECRET}`
-};
+// Build NetSuite auth headers (placeholder for now)
+function getNsHeaders() {
+  const {
+    NS_ACCOUNT_ID,
+    NS_CONSUMER_KEY,
+    NS_CONSUMER_SECRET,
+    NS_TOKEN_ID,
+    NS_TOKEN_SECRET
+  } = process.env;
 
-export async function createCustomerInNS(contact) {
-  log("Creating Customer in NetSuite:", contact.id);
+  // If any of these are missing, just log and skip the call for now
+  if (!NS_ACCOUNT_ID || !NS_CONSUMER_KEY || !NS_CONSUMER_SECRET || !NS_TOKEN_ID || !NS_TOKEN_SECRET) {
+    log('NetSuite credentials not fully configured. Skipping NetSuite call.');
+    return null;
+  }
 
-  const response = await axios.post(
-    process.env.NS_RESTLET_CUSTOMER_URL,
-    { hubspotRecord: contact },
-    { headers: NS_HEADERS }
-  );
+  // Simple NLAuth-style header (you will later refine this or switch to OAuth1/TokenBased)
+  const header = `NLAuth nlauth_account=${NS_ACCOUNT_ID}, ` +
+                 `nlauth_consumer_key=${NS_CONSUMER_KEY}, ` +
+                 `nlauth_consumer_secret=${NS_CONSUMER_SECRET}, ` +
+                 `nlauth_token=${NS_TOKEN_ID}, ` +
+                 `nlauth_token_secret=${NS_TOKEN_SECRET}`;
 
-  log("NetSuite Customer Created:", response.data);
+  return {
+    'Content-Type': 'application/json',
+    'Authorization': header
+  };
+}
+
+async function postToNetSuite(url, payload) {
+  if (!url) {
+    log('NetSuite RESTlet URL is not set. Skipping NetSuite call.');
+    return;
+  }
+
+  const headers = getNsHeaders();
+  if (!headers) {
+    // getNsHeaders already logged the problem
+    return;
+  }
+
+  log('Posting to NetSuite RESTlet:', url, 'Payload keys:', Object.keys(payload || {}));
+
+  const response = await axios.post(url, payload, { headers });
+  log('NetSuite response:', response.data);
   return response.data;
 }
 
+// HubSpot Company → NetSuite Customer
+export async function createCustomerInNS(company) {
+  log('Creating Customer in NetSuite:', company.id);
+
+  const payload = {
+    hubspotRecord: company
+    // later we will transform this into a simpler object for the RESTlet
+  };
+
+  return postToNetSuite(process.env.NS_RESTLET_CUSTOMER_URL, payload);
+}
+
+// HubSpot Product → NetSuite Item
 export async function createItemInNS(product) {
-  log("Creating Item in NetSuite:", product.id);
+  log('Creating Item in NetSuite:', product.id);
 
-  const response = await axios.post(
-    process.env.NS_RESTLET_ITEM_URL,
-    { hubspotRecord: product },
-    { headers: NS_HEADERS }
-  );
+  const payload = {
+    hubspotRecord: product
+  };
 
-  log("NetSuite Item Created:", response.data);
-  return response.data;
+  return postToNetSuite(process.env.NS_RESTLET_ITEM_URL, payload);
 }
 
+// HubSpot Deal → NetSuite Sales Order
 export async function createSalesOrderInNS(deal) {
-  log("Creating Sales Order in NetSuite:", deal.id);
+  log('Creating Sales Order in NetSuite:', deal.id);
 
-  const response = await axios.post(
-    process.env.NS_RESTLET_SALESORDER_URL,
-    { hubspotRecord: deal },
-    { headers: NS_HEADERS }
-  );
+  const payload = {
+    hubspotRecord: deal
+  };
 
-  log("NetSuite Sales Order Created:", response.data);
-  return response.data;
+  return postToNetSuite(process.env.NS_RESTLET_SALESORDER_URL, payload);
 }
