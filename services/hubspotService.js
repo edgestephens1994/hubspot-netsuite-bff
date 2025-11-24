@@ -2,15 +2,13 @@ import axios from 'axios';
 import { log } from '../utils/logger.js';
 import {
   createCustomerInNS,
+  updateCustomerInNS,
   createItemInNS,
   createSalesOrderInNS
 } from './netsuiteService.js';
 
 const HUBSPOT_TOKEN = process.env.HUBSPOT_ACCESS_TOKEN;
 
-// Map webhook object type → CRM v3 API object type
-// webhook gives "company", "deal", "product"
-// CRM v3 wants "companies", "deals", "products"
 const HUBSPOT_OBJECT_TYPE_MAP = {
   company: 'companies',
   deal: 'deals',
@@ -18,7 +16,6 @@ const HUBSPOT_OBJECT_TYPE_MAP = {
   contact: 'contacts'
 };
 
-// Generic fetch for a full HubSpot record
 async function fetchHubSpotRecord(apiObjectType, objectId) {
   if (!HUBSPOT_TOKEN) {
     throw new Error('HUBSPOT_ACCESS_TOKEN is not set');
@@ -37,7 +34,6 @@ async function fetchHubSpotRecord(apiObjectType, objectId) {
   return response.data;
 }
 
-// Main handler for a single webhook event
 export async function handleHubSpotEvent(event) {
   try {
     log('Raw HubSpot webhook event:', event);
@@ -49,8 +45,9 @@ export async function handleHubSpotEvent(event) {
       return;
     }
 
-    // subscriptionType looks like "company.creation" / "deal.creation" / "product.creation"
-    const [rawType] = subscriptionType.split('.');
+    // subscriptionType examples:
+    // "company.creation", "company.propertyChange", "deal.creation", etc.
+    const [rawType, rawEvent] = subscriptionType.split('.');
     const apiObjectType = HUBSPOT_OBJECT_TYPE_MAP[rawType];
 
     if (!apiObjectType) {
@@ -58,30 +55,32 @@ export async function handleHubSpotEvent(event) {
       return;
     }
 
-    // Fetch full record from HubSpot
     const record = await fetchHubSpotRecord(apiObjectType, objectId);
 
     log(`Fetched full ${apiObjectType} record from HubSpot:`, record.id);
 
-    // Route by API object type
     switch (apiObjectType) {
       case 'companies':
-        // HubSpot Company → NetSuite Customer
-        return await createCustomerInNS(record);
+        if (rawEvent === 'creation') {
+          // Separate create action
+          return await createCustomerInNS(record);
+        } else {
+          // Any non-creation company event treated as "edit" for now
+          return await updateCustomerInNS(record);
+        }
 
       case 'products':
-        // HubSpot Product → NetSuite Item
+        // TODO: later handle product.creation vs propertyChange similarly
         return await createItemInNS(record);
 
       case 'deals':
-        // HubSpot Deal → NetSuite Sales Order
+        // TODO: later handle deal.creation vs propertyChange similarly
         return await createSalesOrderInNS(record);
 
       default:
         log('No handler implemented for apiObjectType:', apiObjectType);
     }
   } catch (err) {
-    // Log as much detail as possible
     if (err.response) {
       log('HubSpot API error:', {
         status: err.response.status,
@@ -90,10 +89,6 @@ export async function handleHubSpotEvent(event) {
     } else {
       log('HubSpot handler error:', err.message || err);
     }
-
-    // Re-throw so server.js can log "Webhook error"
-  //  throw err;
     return;
   }
 }
-
