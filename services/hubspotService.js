@@ -92,6 +92,8 @@ export async function handleHubSpotEvent(event) {
     }
 
     // Re-throw so server.js can log "Webhook error"
-    throw err;
+  //  throw err;
+    return;
   }
 }
+
