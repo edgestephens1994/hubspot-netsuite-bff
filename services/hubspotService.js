@@ -1,12 +1,32 @@
 import axios from 'axios';
 import { log } from '../utils/logger.js';
-import { createCustomerInNS, createItemInNS, createSalesOrderInNS } from './netsuiteService.js';
+import {
+  createCustomerInNS,
+  createItemInNS,
+  createSalesOrderInNS
+} from './netsuiteService.js';
 
 const HUBSPOT_TOKEN = process.env.HUBSPOT_ACCESS_TOKEN;
 
-// Fetch full HubSpot object details
-async function fetchHubSpotRecord(objectType, objectId) {
-  const url = `https://api.hubapi.com/crm/v3/objects/${objectType}/${objectId}`;
+// Map webhook object type → CRM v3 API object type
+// webhook gives "company", "deal", "product"
+// CRM v3 wants "companies", "deals", "products"
+const HUBSPOT_OBJECT_TYPE_MAP = {
+  company: 'companies',
+  deal: 'deals',
+  product: 'products',
+  contact: 'contacts'
+};
+
+// Generic fetch for a full HubSpot record
+async function fetchHubSpotRecord(apiObjectType, objectId) {
+  if (!HUBSPOT_TOKEN) {
+    throw new Error('HUBSPOT_ACCESS_TOKEN is not set');
+  }
+
+  const url = `https://api.hubapi.com/crm/v3/objects/${apiObjectType}/${objectId}`;
+
+  log('Fetching HubSpot record from:', url);
 
   const response = await axios.get(url, {
     headers: {
@@ -17,28 +37,61 @@ async function fetchHubSpotRecord(objectType, objectId) {
   return response.data;
 }
 
-// Main handler for webhook events
+// Main handler for a single webhook event
 export async function handleHubSpotEvent(event) {
-  const { objectId, objectType, eventType } = event;
+  try {
+    log('Raw HubSpot webhook event:', event);
 
-  log(`Processing event: ${objectType} / ${eventType}`);
+    const { objectId, subscriptionType } = event;
 
-  // Fetch full record from HubSpot
-  const record = await fetchHubSpotRecord(objectType, objectId);
+    if (!objectId || !subscriptionType) {
+      log('Event missing objectId or subscriptionType, skipping.');
+      return;
+    }
 
-  // Route by object type
-  switch (objectType) {
-    case "companies":
-      return createCustomerInNS(record);
+    // subscriptionType looks like "company.creation" / "deal.creation" / "product.creation"
+    const [rawType] = subscriptionType.split('.');
+    const apiObjectType = HUBSPOT_OBJECT_TYPE_MAP[rawType];
 
-    case "products":
-      return createItemInNS(record);
+    if (!apiObjectType) {
+      log('Unhandled raw object type from webhook:', rawType);
+      return;
+    }
 
-    case "deals":
-      return createSalesOrderInNS(record);
+    // Fetch full record from HubSpot
+    const record = await fetchHubSpotRecord(apiObjectType, objectId);
 
-    default:
-      log("Unhandled object type:", objectType);
+    log(`Fetched full ${apiObjectType} record from HubSpot:`, record.id);
+
+    // Route by API object type
+    switch (apiObjectType) {
+      case 'companies':
+        // HubSpot Company → NetSuite Customer
+        return await createCustomerInNS(record);
+
+      case 'products':
+        // HubSpot Product → NetSuite Item
+        return await createItemInNS(record);
+
+      case 'deals':
+        // HubSpot Deal → NetSuite Sales Order
+        return await createSalesOrderInNS(record);
+
+      default:
+        log('No handler implemented for apiObjectType:', apiObjectType);
+    }
+  } catch (err) {
+    // Log as much detail as possible
+    if (err.response) {
+      log('HubSpot API error:', {
+        status: err.response.status,
+        data: err.response.data
+      });
+    } else {
+      log('HubSpot handler error:', err.message || err);
+    }
+
+    // Re-throw so server.js can log "Webhook error"
+    throw err;
   }
 }
-
