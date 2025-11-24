@@ -1,3 +1,10 @@
+import axios from 'axios';
+import crypto from 'crypto';
+import { log } from '../utils/logger.js';
+
+/**
+ * Build OAuth 1.0 signature for NetSuite TBA
+ */
 function buildOAuthHeader(method, url) {
   const {
     NS_ACCOUNT_ID,
@@ -11,9 +18,9 @@ function buildOAuthHeader(method, url) {
   const oauthTimestamp = Math.floor(Date.now() / 1000);
 
   const parsedUrl = new URL(url);
-  const baseUrl = parsedUrl.origin + parsedUrl.pathname; // remove query params for signature
+  const baseUrl = parsedUrl.origin + parsedUrl.pathname; // IMPORTANT: no query parameters
 
-  // NetSuite requires the base string to EXCLUDE query parameters
+  // OAuth params required by NetSuite
   const params = {
     oauth_consumer_key: NS_CONSUMER_KEY,
     oauth_token: NS_TOKEN_ID,
@@ -23,14 +30,12 @@ function buildOAuthHeader(method, url) {
     oauth_version: '1.0'
   };
 
-  // must be lexicographically sorted (NetSuite requirement)
+  // Alphabetically sorted parameters (MANDATORY for NetSuite)
   const sorted = Object.keys(params)
     .sort()
-    .map(key => `${encodeURIComponent(key)}=${encodeURIComponent(params[key])}`)
+    .map((key) => `${encodeURIComponent(key)}=${encodeURIComponent(params[key])}`)
     .join('&');
 
-  // base string format:
-  // METHOD & encoded(baseUrl) & encoded(sorted params)
   const baseString =
     method.toUpperCase() +
     '&' +
@@ -38,7 +43,6 @@ function buildOAuthHeader(method, url) {
     '&' +
     encodeURIComponent(sorted);
 
-  // signing key is consumer_secret & token_secret
   const signingKey = `${NS_CONSUMER_SECRET}&${NS_TOKEN_SECRET}`;
 
   const oauthSignature = crypto
@@ -46,7 +50,7 @@ function buildOAuthHeader(method, url) {
     .update(baseString)
     .digest('base64');
 
-  // Final OAuth header (must include realm)
+  // Final OAuth header (MUST include realm)
   const header =
     `OAuth realm="${NS_ACCOUNT_ID}", ` +
     `oauth_consumer_key="${NS_CONSUMER_KEY}", ` +
@@ -58,4 +62,79 @@ function buildOAuthHeader(method, url) {
     `oauth_signature="${encodeURIComponent(oauthSignature)}"`;
 
   return header;
+}
+
+/**
+ * POST to NetSuite RESTlet using OAuth 1.0 TBA
+ */
+async function postToNetSuite(url, payload) {
+  if (!url) {
+    log('NS RESTlet URL not set — skipping NetSuite call.');
+    return;
+  }
+
+  const authHeader = buildOAuthHeader('POST', url);
+
+  try {
+    const response = await axios.post(url, payload, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': authHeader,
+        'Cookie': 'NS_ROUTING_VERSION=2'
+      }
+    });
+
+    log('NetSuite RESTlet response:', response.data);
+    return response.data;
+
+  } catch (err) {
+    if (err.response) {
+      log('NetSuite error:', {
+        status: err.response.status,
+        data: err.response.data
+      });
+    } else {
+      log('NetSuite error:', err.message);
+    }
+    throw err;
+  }
+}
+
+/**
+ * CREATE CUSTOMER FROM HUBSPOT COMPANY
+ */
+export async function createCustomerInNS(company) {
+  log('Creating Customer in NetSuite:', company.id);
+
+  const payload = {
+    hubspotRecord: company
+  };
+
+  return postToNetSuite(process.env.NS_RESTLET_CUSTOMER_URL, payload);
+}
+
+/**
+ * CREATE ITEM FROM HUBSPOT PRODUCT (later)
+ */
+export async function createItemInNS(product) {
+  log('Creating Item in NetSuite:', product.id);
+
+  const payload = {
+    hubspotRecord: product
+  };
+
+  return postToNetSuite(process.env.NS_RESTLET_ITEM_URL, payload);
+}
+
+/**
+ * CREATE SALES ORDER FROM HUBSPOT DEAL (later)
+ */
+export async function createSalesOrderInNS(deal) {
+  log('Creating Sales Order in NetSuite:', deal.id);
+
+  const payload = {
+    hubspotRecord: deal
+  };
+
+  return postToNetSuite(process.env.NS_RESTLET_SALESORDER_URL, payload);
 }
