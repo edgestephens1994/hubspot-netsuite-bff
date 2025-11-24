@@ -111,3 +111,26 @@ export async function createCustomerInNS(company) {
     hubspotRecord: company
   });
 }
+
+export async function createItemInNS(product) {
+  log('Creating Item in NetSuite:', product.id);
+
+  const payload = {
+    hubspotRecord: product,
+  };
+
+  return postToNetSuite(process.env.NS_RESTLET_ITEM_URL, payload);
+}
+
+/**
+ * HubSpot Deal → NetSuite Sales Order
+ */
+export async function createSalesOrderInNS(deal) {
+  log('Creating Sales Order in NetSuite:', deal.id);
+
+  const payload = {
+    hubspotRecord: deal,
+  };
+
+  return postToNetSuite(process.env.NS_RESTLET_SALESORDER_URL, payload);
+}
