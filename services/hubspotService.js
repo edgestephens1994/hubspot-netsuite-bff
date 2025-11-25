@@ -21,11 +21,16 @@ async function fetchHubSpotRecord(apiObjectType, objectId) {
     throw new Error('HUBSPOT_ACCESS_TOKEN is not set');
   }
 
-  // For deals, include associations (companies + line_items)
-  const url =
-    apiObjectType === 'deals'
-      ? `https://api.hubapi.com/crm/v3/objects/deals/${objectId}?associations=companies, line_items`
-      : `https://api.hubapi.com/crm/v3/objects/${apiObjectType}/${objectId}`;
+  let url;
+
+  if (apiObjectType === 'deals') {
+    // ✅ No space between companies and line_items
+    const associationsParam = encodeURIComponent('companies,line_items');
+
+    url = `https://api.hubapi.com/crm/v3/objects/deals/${objectId}?associations=${associationsParam}`;
+  } else {
+    url = `https://api.hubapi.com/crm/v3/objects/${apiObjectType}/${objectId}`;
+  }
 
   log('Fetching HubSpot record from:', url);
 
@@ -37,6 +42,7 @@ async function fetchHubSpotRecord(apiObjectType, objectId) {
 
   return response.data;
 }
+
 
 
 export async function handleHubSpotEvent(event) {
@@ -97,4 +103,5 @@ export async function handleHubSpotEvent(event) {
     return;
   }
 }
+
 
