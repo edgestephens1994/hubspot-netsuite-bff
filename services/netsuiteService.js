@@ -2,6 +2,9 @@ import axios from 'axios';
 import crypto from 'crypto';
 import { log } from '../utils/logger.js';
 
+const HUBSPOT_TOKEN = process.env.HUBSPOT_ACCESS_TOKEN;
+
+
 /**
  * Build OAuth 1.0a signature using HMAC-SHA256 and including query params.
  */
@@ -263,4 +266,5 @@ export async function createSalesOrderInNS(deal) {
 
   return callNetSuite('POST', process.env.NS_RESTLET_SALESORDER_URL, payload);
 }
+
 
