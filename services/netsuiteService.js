@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { log } from '../utils/logger.js';
 
 const HUBSPOT_TOKEN = process.env.HUBSPOT_ACCESS_TOKEN;
+const HUBSPOT_BASE_URL = 'https://api.hubapi.com';
 
 
 /**
@@ -153,11 +154,44 @@ export async function createItemInNS(product) {
   return callNetSuite('POST', process.env.NS_RESTLET_ITEM_URL, payload);
 }
 
+
+// Helper: fetch deal associations when they're not present on the deal object
+async function fetchDealAssociations(dealId, toObjectType) {
+  if (!HUBSPOT_TOKEN) {
+    throw new Error('HUBSPOT_ACCESS_TOKEN is not set (fetchDealAssociations)');
+  }
+
+  const url = `${HUBSPOT_BASE_URL}/crm/v3/objects/deals/${dealId}/associations/${toObjectType}?limit=100`;
+
+  log(`🔎 Fetching HubSpot deal associations: ${url}`);
+
+  const response = await axios.get(url, {
+    headers: {
+      Authorization: `Bearer ${HUBSPOT_TOKEN}`,
+    },
+  });
+
+  const results = response.data.results || [];
+
+  log('📎 Raw association results from HubSpot:', {
+    dealId,
+    toObjectType,
+    results,
+  });
+
+  return results;
+}
+
+
 // HubSpot Deal → NetSuite Sales Order (still POST, placeholder for later)
 // HubSpot Deal → NetSuite Sales Order (POST, full implementation)
 // HubSpot Deal → NetSuite Sales Order (POST, full implementation with extra debug)
+// HubSpot Deal → NetSuite Sales Order (POST, full implementation with association fallback)
 export async function createSalesOrderInNS(deal) {
-  log('🔄 createSalesOrderInNS - Raw HubSpot deal object:', JSON.stringify(deal, null, 2));
+  log(
+    '🔄 createSalesOrderInNS - Raw HubSpot deal object:',
+    JSON.stringify(deal, null, 2)
+  );
 
   if (!HUBSPOT_TOKEN) {
     throw new Error('HUBSPOT_ACCESS_TOKEN is not set (netsuiteService)');
@@ -166,52 +200,86 @@ export async function createSalesOrderInNS(deal) {
   // 1) Deal ID
   const hubspotDealId = deal.id?.toString();
 
-  // 2) Associations object
-  const associations = deal.associations || {};
-  log('🧩 Deal associations object:', JSON.stringify(associations, null, 2));
+  // ---- COMPANY ASSOCIATION ----
+  let hubspotCompanyId = null;
 
-  // 3) Associated company
-  const companyAssoc =
+  // a) Try embedded associations first
+  const associations = deal.associations || {};
+  log(
+    '🧩 Deal associations object (from deal payload):',
+    JSON.stringify(associations, null, 2)
+  );
+
+  const embeddedCompanyAssoc =
     associations.companies &&
     associations.companies.results &&
     associations.companies.results[0];
 
-  const hubspotCompanyId = companyAssoc ? companyAssoc.id?.toString() : null;
+  if (embeddedCompanyAssoc && embeddedCompanyAssoc.id) {
+    hubspotCompanyId = embeddedCompanyAssoc.id.toString();
+  } else {
+    // b) Fallback: call associations API
+    const companyAssocResults = await fetchDealAssociations(
+      hubspotDealId,
+      'companies'
+    );
+
+    if (companyAssocResults.length > 0) {
+      // v3 associations response: [{ id, type }]
+      hubspotCompanyId = companyAssocResults[0].id?.toString() || null;
+    }
+  }
 
   log('🏢 Extracted company association:', {
     hubspotDealId,
     hubspotCompanyId,
-    companyAssoc,
   });
 
-  // 4) Associated line items
-  const lineItemAssoc =
-    associations.line_items &&
-    associations.line_items.results
+  // ---- LINE ITEM ASSOCIATIONS ----
+  const lineItems = [];
+
+  // a) Try embedded line_items first
+  let embeddedLineItemAssoc =
+    associations.line_items && associations.line_items.results
       ? associations.line_items.results
       : [];
 
-  log('📦 Raw line_items association results:', lineItemAssoc);
+  log(
+    '📦 Embedded line_items association results:',
+    JSON.stringify(embeddedLineItemAssoc, null, 2)
+  );
 
-  const lineItemIds = lineItemAssoc
+  // b) If no embedded line_items, call associations API
+  if (!embeddedLineItemAssoc.length) {
+    const lineAssocResults = await fetchDealAssociations(
+      hubspotDealId,
+      'line_items'
+    );
+    embeddedLineItemAssoc = lineAssocResults;
+    log(
+      '📦 line_items association results from API fallback:',
+      JSON.stringify(embeddedLineItemAssoc, null, 2)
+    );
+  }
+
+  // Extract IDs from association results (both shapes use "id")
+  const lineItemIds = embeddedLineItemAssoc
     .map((li) => li.id?.toString())
     .filter(Boolean);
 
-  log('📦 Line item IDs from deal:', lineItemIds);
-
-  const lineItems = [];
+  log('📦 Line item IDs resolved for this deal:', lineItemIds);
 
   // Candidate property names for "item internal id" on the line item
   const skuPropCandidates = [
-    'item_sku',                       // likely custom "item sku field"
-    'hs_sku',                         // default HubSpot SKU property
-    'sku',                            // generic
-    process.env.HUBSPOT_ITEM_SKU_PROPERTY,  // optional override via env var
+    'item_sku',                            // likely custom "item sku field"
+    'hs_sku',                              // default HubSpot SKU property
+    'sku',                                 // generic
+    process.env.HUBSPOT_ITEM_SKU_PROPERTY, // optional override via env var
   ].filter(Boolean);
 
-  // 5) Fetch each line item to get SKU, qty, price
+  // 2) Fetch each line item to get SKU, qty, price
   for (const lineItemId of lineItemIds) {
-    const url = `https://api.hubapi.com/crm/v3/objects/line_items/${lineItemId}`;
+    const url = `${HUBSPOT_BASE_URL}/crm/v3/objects/line_items/${lineItemId}`;
 
     log('➡️ Fetching HubSpot line item from:', url);
 
@@ -263,12 +331,16 @@ export async function createSalesOrderInNS(deal) {
     });
   }
 
-  log('✅ Final mapped line items to send to NetSuite:', lineItems);
+  log(
+    '✅ Final mapped line items to send to NetSuite:',
+    JSON.stringify(lineItems, null, 2)
+  );
 
   if (!hubspotCompanyId) {
-    log('❌ No associated company on deal. NS RESTlet will complain about missing hubspotCompanyId.', {
-      hubspotDealId,
-    });
+    log(
+      '❌ No associated company on deal. NS RESTlet will complain about missing hubspotCompanyId.',
+      { hubspotDealId }
+    );
   }
 
   if (!lineItems.length) {
@@ -278,17 +350,18 @@ export async function createSalesOrderInNS(deal) {
     );
   }
 
-  // 6) Payload for NetSuite RESTlet (what the RESTlet expects)
+  // 3) Payload for NetSuite RESTlet (what the RESTlet expects)
   const payload = {
     hubspotDealId,
     hubspotCompanyId,
     lineItems,
   };
 
-  log('🚚 Payload being sent to NetSuite Sales Order RESTlet:', JSON.stringify(payload, null, 2));
+  log(
+    '🚚 Payload being sent to NetSuite Sales Order RESTlet:',
+    JSON.stringify(payload, null, 2)
+  );
 
   return callNetSuite('POST', process.env.NS_RESTLET_SALESORDER_URL, payload);
 }
-
-
 
