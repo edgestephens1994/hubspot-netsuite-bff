@@ -182,11 +182,60 @@ async function fetchDealAssociations(dealId, toObjectType) {
   return results;
 }
 
+// 🔧 Helper: fetch Product SKU (NetSuite item internal ID) from HubSpot Product
+async function fetchProductSku(productId) {
+  if (!HUBSPOT_TOKEN) {
+    throw new Error('HUBSPOT_ACCESS_TOKEN is not set (fetchProductSku)');
+  }
+
+  const url = `${HUBSPOT_BASE_URL}/crm/v3/objects/products/${productId}`;
+
+  log(`🔎 Fetching HubSpot product for SKU mapping: ${url}`);
+
+  const response = await axios.get(url, {
+    headers: {
+      Authorization: `Bearer ${HUBSPOT_TOKEN}`,
+    },
+  });
+
+  const props = response.data.properties || {};
+
+  // Candidate property names on the PRODUCT where you might be storing NS item internal ID
+  const skuPropCandidates = [
+    'item_sku',                            // your custom "item sku field"
+    'hs_sku',                              // default HubSpot product SKU
+    'sku',                                 // generic
+    process.env.HUBSPOT_ITEM_SKU_PROPERTY, // optional override via env var
+  ].filter(Boolean);
+
+  let itemInternalId;
+  let chosenPropName;
+
+  for (const propName of skuPropCandidates) {
+    if (props[propName]) {
+      itemInternalId = props[propName];
+      chosenPropName = propName;
+      break;
+    }
+  }
+
+  log('📦 Product properties for SKU mapping:', {
+    productId,
+    props,
+    chosenSkuProperty: chosenPropName,
+    itemInternalId,
+  });
+
+  return { itemInternalId, chosenPropName };
+}
+
+
 
 // HubSpot Deal → NetSuite Sales Order (still POST, placeholder for later)
 // HubSpot Deal → NetSuite Sales Order (POST, full implementation)
 // HubSpot Deal → NetSuite Sales Order (POST, full implementation with extra debug)
 // HubSpot Deal → NetSuite Sales Order (POST, full implementation with association fallback)
+// HubSpot Deal → NetSuite Sales Order (POST, with product lookup for SKU)
 export async function createSalesOrderInNS(deal) {
   log(
     '🔄 createSalesOrderInNS - Raw HubSpot deal object:',
@@ -197,13 +246,11 @@ export async function createSalesOrderInNS(deal) {
     throw new Error('HUBSPOT_ACCESS_TOKEN is not set (netsuiteService)');
   }
 
-  // 1) Deal ID
   const hubspotDealId = deal.id?.toString();
 
-  // ---- COMPANY ASSOCIATION ----
+  // ---------- COMPANY ASSOCIATION ----------
   let hubspotCompanyId = null;
 
-  // a) Try embedded associations first
   const associations = deal.associations || {};
   log(
     '🧩 Deal associations object (from deal payload):',
@@ -218,14 +265,11 @@ export async function createSalesOrderInNS(deal) {
   if (embeddedCompanyAssoc && embeddedCompanyAssoc.id) {
     hubspotCompanyId = embeddedCompanyAssoc.id.toString();
   } else {
-    // b) Fallback: call associations API
     const companyAssocResults = await fetchDealAssociations(
       hubspotDealId,
       'companies'
     );
-
     if (companyAssocResults.length > 0) {
-      // v3 associations response: [{ id, type }]
       hubspotCompanyId = companyAssocResults[0].id?.toString() || null;
     }
   }
@@ -235,10 +279,9 @@ export async function createSalesOrderInNS(deal) {
     hubspotCompanyId,
   });
 
-  // ---- LINE ITEM ASSOCIATIONS ----
+  // ---------- LINE ITEM ASSOCIATIONS ----------
   const lineItems = [];
 
-  // a) Try embedded line_items first
   let embeddedLineItemAssoc =
     associations.line_items && associations.line_items.results
       ? associations.line_items.results
@@ -249,7 +292,6 @@ export async function createSalesOrderInNS(deal) {
     JSON.stringify(embeddedLineItemAssoc, null, 2)
   );
 
-  // b) If no embedded line_items, call associations API
   if (!embeddedLineItemAssoc.length) {
     const lineAssocResults = await fetchDealAssociations(
       hubspotDealId,
@@ -262,22 +304,13 @@ export async function createSalesOrderInNS(deal) {
     );
   }
 
-  // Extract IDs from association results (both shapes use "id")
   const lineItemIds = embeddedLineItemAssoc
     .map((li) => li.id?.toString())
     .filter(Boolean);
 
   log('📦 Line item IDs resolved for this deal:', lineItemIds);
 
-  // Candidate property names for "item internal id" on the line item
-  const skuPropCandidates = [
-    'item_sku',                            // likely custom "item sku field"
-    'hs_sku',                              // default HubSpot SKU property
-    'sku',                                 // generic
-    process.env.HUBSPOT_ITEM_SKU_PROPERTY, // optional override via env var
-  ].filter(Boolean);
-
-  // 2) Fetch each line item to get SKU, qty, price
+  // 2) Fetch each line item, then product, to get SKU / item internal ID
   for (const lineItemId of lineItemIds) {
     const url = `${HUBSPOT_BASE_URL}/crm/v3/objects/line_items/${lineItemId}`;
 
@@ -291,11 +324,21 @@ export async function createSalesOrderInNS(deal) {
 
     const props = liResp.data.properties || {};
 
-    // Try multiple property names for the NS item internal ID
+    const quantity = parseFloat(props.quantity || '1');
+    const rate = parseFloat(props.amount || '0'); // use amount if price not present
+
+    // First attempt: if line item itself ever gets a direct SKU
+    const lineItemSkuCandidates = [
+      'item_sku',
+      'hs_sku',
+      'sku',
+      process.env.HUBSPOT_ITEM_SKU_PROPERTY,
+    ].filter(Boolean);
+
     let itemInternalId;
     let chosenPropName;
 
-    for (const propName of skuPropCandidates) {
+    for (const propName of lineItemSkuCandidates) {
       if (props[propName]) {
         itemInternalId = props[propName];
         chosenPropName = propName;
@@ -303,8 +346,18 @@ export async function createSalesOrderInNS(deal) {
       }
     }
 
-    const quantity = parseFloat(props.quantity || '1');
-    const rate = parseFloat(props.price || '0');
+    // If no SKU on line item, fall back to the associated PRODUCT via hs_product_id
+    if (!itemInternalId && props.hs_product_id) {
+      const productId = props.hs_product_id;
+      log('🔁 No SKU on line item; falling back to product lookup for:', {
+        lineItemId,
+        productId,
+      });
+
+      const productSkuResult = await fetchProductSku(productId);
+      itemInternalId = productSkuResult.itemInternalId;
+      chosenPropName = productSkuResult.chosenPropName;
+    }
 
     log('📄 Raw line item properties + derived mapping:', {
       lineItemId,
@@ -317,8 +370,8 @@ export async function createSalesOrderInNS(deal) {
 
     if (!itemInternalId) {
       log(
-        '⚠️ Line item missing any usable SKU property; cannot determine NS item internal ID. Skipping line item.',
-        { lineItemId, skuPropCandidates }
+        '⚠️ Line item missing any usable SKU (even after product lookup); cannot determine NS item internal ID. Skipping line item.',
+        { lineItemId }
       );
       continue;
     }
@@ -350,7 +403,6 @@ export async function createSalesOrderInNS(deal) {
     );
   }
 
-  // 3) Payload for NetSuite RESTlet (what the RESTlet expects)
   const payload = {
     hubspotDealId,
     hubspotCompanyId,
@@ -364,4 +416,6 @@ export async function createSalesOrderInNS(deal) {
 
   return callNetSuite('POST', process.env.NS_RESTLET_SALESORDER_URL, payload);
 }
+
+
 
