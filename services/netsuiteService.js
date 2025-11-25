@@ -151,12 +151,116 @@ export async function createItemInNS(product) {
 }
 
 // HubSpot Deal → NetSuite Sales Order (still POST, placeholder for later)
+// HubSpot Deal → NetSuite Sales Order (POST, full implementation)
 export async function createSalesOrderInNS(deal) {
-  log('Creating Sales Order in NetSuite:', deal.id);
+  log('🔄 createSalesOrderInNS - Raw HubSpot deal object:', JSON.stringify(deal, null, 2));
 
+  if (!HUBSPOT_TOKEN) {
+    throw new Error('HUBSPOT_ACCESS_TOKEN is not set (netsuiteService)');
+  }
+
+  // 1) Deal ID
+  const hubspotDealId = deal.id?.toString();
+
+  // 2) Associated company
+  const companyAssoc =
+    deal.associations &&
+    deal.associations.companies &&
+    deal.associations.companies.results &&
+    deal.associations.companies.results[0];
+
+  const hubspotCompanyId = companyAssoc ? companyAssoc.id?.toString() : null;
+
+  log('🧩 Extracted deal associations:', {
+    hubspotDealId,
+    hubspotCompanyId,
+    associations: deal.associations || null,
+  });
+
+  // 3) Associated line items
+  const lineItemAssoc =
+    (deal.associations &&
+      deal.associations.line_items &&
+      deal.associations.line_items.results) ||
+    [];
+
+  const lineItemIds = lineItemAssoc.map((li) => li.id?.toString());
+
+  log('📦 Line item IDs from deal:', lineItemIds);
+
+  const lineItems = [];
+
+  // Fetch each line item to get SKU, quantity, price
+  for (const lineItemId of lineItemIds) {
+    if (!lineItemId) continue;
+
+    const url = `https://api.hubapi.com/crm/v3/objects/line_items/${lineItemId}`;
+
+    log('➡️ Fetching HubSpot line item from:', url);
+
+    const liResp = await axios.get(url, {
+      headers: {
+        Authorization: `Bearer ${HUBSPOT_TOKEN}`,
+      },
+    });
+
+    const props = liResp.data.properties || {};
+
+    const itemInternalId = props.hs_sku || props.sku; // 🔧 this is your NS item internal ID
+    const quantity = parseFloat(props.quantity || '1');
+    const rate = parseFloat(props.price || '0');
+
+    log('📄 Raw line item properties:', {
+      lineItemId,
+      props,
+      derived: {
+        itemInternalId,
+        quantity,
+        rate,
+      },
+    });
+
+    if (!itemInternalId) {
+      log(
+        '⚠️ Line item missing SKU; cannot determine NS item internal ID. Skipping line item:',
+        lineItemId
+      );
+      continue;
+    }
+
+    lineItems.push({
+      itemInternalId,
+      quantity: isNaN(quantity) ? 1 : quantity,
+      rate: isNaN(rate) ? undefined : rate,
+      hubspotLineItemId: lineItemId,
+    });
+  }
+
+  log('✅ Final mapped line items for NS:', lineItems);
+
+  if (!hubspotCompanyId) {
+    log(
+      '❌ No associated company on deal. Payload will be invalid for NS RESTlet.',
+      { hubspotDealId }
+    );
+  }
+
+  if (!lineItems.length) {
+    log(
+      '❌ No valid line items mapped for NS. Payload will be invalid for NS RESTlet.',
+      { hubspotDealId }
+    );
+  }
+
+  // 4) Payload for NetSuite RESTlet (what your RESTlet expects)
   const payload = {
-    hubspotRecord: deal,
+    hubspotDealId,
+    hubspotCompanyId,
+    lineItems,
   };
+
+  log('🚚 Payload being sent to NetSuite Sales Order RESTlet:', JSON.stringify(payload, null, 2));
 
   return callNetSuite('POST', process.env.NS_RESTLET_SALESORDER_URL, payload);
 }
+
