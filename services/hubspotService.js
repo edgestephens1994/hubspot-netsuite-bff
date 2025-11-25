@@ -85,8 +85,20 @@ export async function handleHubSpotEvent(event) {
         return await createItemInNS(record);
 
       case 'deals':
-        // TODO: later handle deal.creation vs propertyChange similarly
+      if (rawEvent === 'creation') {
+        log('Handling deal.creation → creating Sales Order in NetSuite', {
+          dealId: record.id,
+          subscriptionType,
+        });
         return await createSalesOrderInNS(record);
+      } else {
+        log('Skipping Sales Order creation for non-creation deal event', {
+          dealId: record.id,
+          subscriptionType,
+          rawEvent,
+        });
+        return;
+      }
 
       default:
         log('No handler implemented for apiObjectType:', apiObjectType);
@@ -103,5 +115,6 @@ export async function handleHubSpotEvent(event) {
     return;
   }
 }
+
 
 
