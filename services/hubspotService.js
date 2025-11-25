@@ -21,7 +21,11 @@ async function fetchHubSpotRecord(apiObjectType, objectId) {
     throw new Error('HUBSPOT_ACCESS_TOKEN is not set');
   }
 
-  const url = `https://api.hubapi.com/crm/v3/objects/${apiObjectType}/${objectId}`;
+  // For deals, include associations (companies + line_items)
+  const url =
+    apiObjectType === 'deals'
+      ? `https://api.hubapi.com/crm/v3/objects/deals/${objectId}?associations=companies, line_items`
+      : `https://api.hubapi.com/crm/v3/objects/${apiObjectType}/${objectId}`;
 
   log('Fetching HubSpot record from:', url);
 
@@ -33,6 +37,7 @@ async function fetchHubSpotRecord(apiObjectType, objectId) {
 
   return response.data;
 }
+
 
 export async function handleHubSpotEvent(event) {
   try {
@@ -92,3 +97,4 @@ export async function handleHubSpotEvent(event) {
     return;
   }
 }
+
