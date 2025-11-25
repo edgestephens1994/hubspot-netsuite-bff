@@ -155,6 +155,7 @@ export async function createItemInNS(product) {
 
 // HubSpot Deal → NetSuite Sales Order (still POST, placeholder for later)
 // HubSpot Deal → NetSuite Sales Order (POST, full implementation)
+// HubSpot Deal → NetSuite Sales Order (POST, full implementation with extra debug)
 export async function createSalesOrderInNS(deal) {
   log('🔄 createSalesOrderInNS - Raw HubSpot deal object:', JSON.stringify(deal, null, 2));
 
@@ -165,38 +166,51 @@ export async function createSalesOrderInNS(deal) {
   // 1) Deal ID
   const hubspotDealId = deal.id?.toString();
 
-  // 2) Associated company
+  // 2) Associations object
+  const associations = deal.associations || {};
+  log('🧩 Deal associations object:', JSON.stringify(associations, null, 2));
+
+  // 3) Associated company
   const companyAssoc =
-    deal.associations &&
-    deal.associations.companies &&
-    deal.associations.companies.results &&
-    deal.associations.companies.results[0];
+    associations.companies &&
+    associations.companies.results &&
+    associations.companies.results[0];
 
   const hubspotCompanyId = companyAssoc ? companyAssoc.id?.toString() : null;
 
-  log('🧩 Extracted deal associations:', {
+  log('🏢 Extracted company association:', {
     hubspotDealId,
     hubspotCompanyId,
-    associations: deal.associations || null,
+    companyAssoc,
   });
 
-  // 3) Associated line items
+  // 4) Associated line items
   const lineItemAssoc =
-    (deal.associations &&
-      deal.associations.line_items &&
-      deal.associations.line_items.results) ||
-    [];
+    associations.line_items &&
+    associations.line_items.results
+      ? associations.line_items.results
+      : [];
 
-  const lineItemIds = lineItemAssoc.map((li) => li.id?.toString());
+  log('📦 Raw line_items association results:', lineItemAssoc);
+
+  const lineItemIds = lineItemAssoc
+    .map((li) => li.id?.toString())
+    .filter(Boolean);
 
   log('📦 Line item IDs from deal:', lineItemIds);
 
   const lineItems = [];
 
-  // Fetch each line item to get SKU, quantity, price
-  for (const lineItemId of lineItemIds) {
-    if (!lineItemId) continue;
+  // Candidate property names for "item internal id" on the line item
+  const skuPropCandidates = [
+    'item_sku',                       // likely custom "item sku field"
+    'hs_sku',                         // default HubSpot SKU property
+    'sku',                            // generic
+    process.env.HUBSPOT_ITEM_SKU_PROPERTY,  // optional override via env var
+  ].filter(Boolean);
 
+  // 5) Fetch each line item to get SKU, qty, price
+  for (const lineItemId of lineItemIds) {
     const url = `https://api.hubapi.com/crm/v3/objects/line_items/${lineItemId}`;
 
     log('➡️ Fetching HubSpot line item from:', url);
@@ -209,24 +223,34 @@ export async function createSalesOrderInNS(deal) {
 
     const props = liResp.data.properties || {};
 
-    const itemInternalId = props.hs_sku || props.sku; // 🔧 this is your NS item internal ID
+    // Try multiple property names for the NS item internal ID
+    let itemInternalId;
+    let chosenPropName;
+
+    for (const propName of skuPropCandidates) {
+      if (props[propName]) {
+        itemInternalId = props[propName];
+        chosenPropName = propName;
+        break;
+      }
+    }
+
     const quantity = parseFloat(props.quantity || '1');
     const rate = parseFloat(props.price || '0');
 
-    log('📄 Raw line item properties:', {
+    log('📄 Raw line item properties + derived mapping:', {
       lineItemId,
       props,
-      derived: {
-        itemInternalId,
-        quantity,
-        rate,
-      },
+      chosenSkuProperty: chosenPropName,
+      itemInternalId,
+      quantity,
+      rate,
     });
 
     if (!itemInternalId) {
       log(
-        '⚠️ Line item missing SKU; cannot determine NS item internal ID. Skipping line item:',
-        lineItemId
+        '⚠️ Line item missing any usable SKU property; cannot determine NS item internal ID. Skipping line item.',
+        { lineItemId, skuPropCandidates }
       );
       continue;
     }
@@ -239,23 +263,22 @@ export async function createSalesOrderInNS(deal) {
     });
   }
 
-  log('✅ Final mapped line items for NS:', lineItems);
+  log('✅ Final mapped line items to send to NetSuite:', lineItems);
 
   if (!hubspotCompanyId) {
-    log(
-      '❌ No associated company on deal. Payload will be invalid for NS RESTlet.',
-      { hubspotDealId }
-    );
+    log('❌ No associated company on deal. NS RESTlet will complain about missing hubspotCompanyId.', {
+      hubspotDealId,
+    });
   }
 
   if (!lineItems.length) {
     log(
-      '❌ No valid line items mapped for NS. Payload will be invalid for NS RESTlet.',
+      '❌ No valid line items mapped. NS RESTlet will complain "At least one line item is required".',
       { hubspotDealId }
     );
   }
 
-  // 4) Payload for NetSuite RESTlet (what your RESTlet expects)
+  // 6) Payload for NetSuite RESTlet (what the RESTlet expects)
   const payload = {
     hubspotDealId,
     hubspotCompanyId,
@@ -266,5 +289,6 @@ export async function createSalesOrderInNS(deal) {
 
   return callNetSuite('POST', process.env.NS_RESTLET_SALESORDER_URL, payload);
 }
+
 
 
