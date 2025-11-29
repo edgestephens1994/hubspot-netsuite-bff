@@ -284,14 +284,7 @@ export async function createSalesOrderInNS(deal) {
   const hubspotDealId = deal.id?.toString();
 // ✅ NEW: Only proceed if deal is in Closed Won stage
   const stage = deal.properties?.dealstage;
-  if (stage !== CLOSED_WON_STAGE_ID) {
-    log('⏭ Skipping NetSuite SO creation – deal is not Closed Won', {
-      dealId: hubspotDealId,
-      currentStage: stage,
-      requiredStage: CLOSED_WON_STAGE_ID,
-    });
-    return; // do nothing
-  }
+ 
   // ---------- COMPANY ASSOCIATION ----------
   let hubspotCompanyId = null;
 
@@ -446,6 +439,7 @@ export async function createSalesOrderInNS(deal) {
 
   return callNetSuite('POST', process.env.NS_RESTLET_SALESORDER_URL, payload);
 }
+
 
 
 
