@@ -28,22 +28,23 @@ async function fetchHubSpotRecord(apiObjectType, objectId) {
     const associationsParam = encodeURIComponent('companies,line_items');
 
     url = `https://api.hubapi.com/crm/v3/objects/deals/${objectId}?associations=${associationsParam}`;
- } else if (apiObjectType === 'companies') {
-  // Explicitly request address properties
-  const properties = [
-    'address',
-    'address2',
-    'city',
-    'state',
-    'zip',
-    'country'
-  ].join(',');
+  } else if (apiObjectType === 'companies') {
+    // 🔹 Explicitly request name + address properties
+    const properties = [
+      'name',
+      'address',
+      'address2',
+      'city',
+      'state',
+      'zip',
+      'country',
+      // add any custom fields you use, e.g. 'billing_address', 'shipping_city', etc.
+    ].join(',');
 
-  url = `https://api.hubapi.com/crm/v3/objects/companies/${objectId}?properties=${properties}`;
-} else {
-  url = `https://api.hubapi.com/crm/v3/objects/${apiObjectType}/${objectId}`;
-}
-
+    url = `https://api.hubapi.com/crm/v3/objects/companies/${objectId}?properties=${properties}`;
+  } else {
+    url = `https://api.hubapi.com/crm/v3/objects/${apiObjectType}/${objectId}`;
+  }
 
   log('Fetching HubSpot record from:', url);
 
@@ -55,7 +56,6 @@ async function fetchHubSpotRecord(apiObjectType, objectId) {
 
   return response.data;
 }
-
 
 
 export async function handleHubSpotEvent(event) {
@@ -128,6 +128,7 @@ export async function handleHubSpotEvent(event) {
     return;
   }
 }
+
 
 
 
