@@ -28,9 +28,22 @@ async function fetchHubSpotRecord(apiObjectType, objectId) {
     const associationsParam = encodeURIComponent('companies,line_items');
 
     url = `https://api.hubapi.com/crm/v3/objects/deals/${objectId}?associations=${associationsParam}`;
-  } else {
-    url = `https://api.hubapi.com/crm/v3/objects/${apiObjectType}/${objectId}`;
-  }
+ } else if (apiObjectType === 'companies') {
+  // Explicitly request address properties
+  const properties = [
+    'address',
+    'address2',
+    'city',
+    'state',
+    'zip',
+    'country'
+  ].join(',');
+
+  url = `https://api.hubapi.com/crm/v3/objects/companies/${objectId}?properties=${properties}`;
+} else {
+  url = `https://api.hubapi.com/crm/v3/objects/${apiObjectType}/${objectId}`;
+}
+
 
   log('Fetching HubSpot record from:', url);
 
@@ -115,6 +128,7 @@ export async function handleHubSpotEvent(event) {
     return;
   }
 }
+
 
 
 
