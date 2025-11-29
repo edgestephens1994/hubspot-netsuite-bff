@@ -122,27 +122,116 @@ async function callNetSuite(method, url, payload) {
   }
 }
 
+
+
+/**
+ * Fetch full HubSpot company (with address fields) and merge into the webhook payload.
+ */
+async function enrichCompanyWithAddress(company) {
+  const companyId = company?.id || company?.objectId;
+
+  if (!companyId) {
+    log('⚠️ enrichCompanyWithAddress called without company id; returning original object');
+    return company;
+  }
+
+  if (!HUBSPOT_TOKEN) {
+    log('⚠️ HUBSPOT_ACCESS_TOKEN not set; cannot fetch company address. Returning original object.');
+    return company;
+  }
+
+  // 👉 Adjust this list if your address fields use custom property names
+  const addressProps = [
+    'address',
+    'address2',
+    'city',
+    'state',
+    'zip',
+    'country',
+  ];
+
+  const propsParam = addressProps.join(',');
+
+  const url = `${HUBSPOT_BASE_URL}/crm/v3/objects/companies/${companyId}?properties=${propsParam}`;
+
+  try {
+    log('🔎 Fetching HubSpot company for address enrichment:', { companyId, url });
+
+    const response = await axios.get(url, {
+      headers: {
+        Authorization: `Bearer ${HUBSPOT_TOKEN}`,
+      },
+    });
+
+    const hsProps = response.data?.properties || {};
+
+    log('🏢 HubSpot company address properties:', {
+      companyId,
+      address: hsProps.address,
+      address2: hsProps.address2,
+      city: hsProps.city,
+      state: hsProps.state,
+      zip: hsProps.zip,
+      country: hsProps.country,
+    });
+
+    // Merge HS properties into whatever we got from the webhook
+    return {
+      ...company,
+      properties: {
+        ...(company.properties || {}),
+        ...hsProps, // latest values from HubSpot take precedence
+      },
+    };
+  } catch (err) {
+    if (err.response) {
+      log('❌ Error fetching HubSpot company for address', {
+        companyId,
+        status: err.response.status,
+        data: err.response.data,
+      });
+    } else {
+      log('❌ Error fetching HubSpot company for address', {
+        companyId,
+        message: err.message,
+      });
+    }
+
+    // Fail soft: still send something to NetSuite
+    return company;
+  }
+}
+
+
+// HubSpot Company → NetSuite Customer (CREATE)
 // HubSpot Company → NetSuite Customer (CREATE)
 export async function createCustomerInNS(company) {
   log('Creating Customer in NetSuite (POST):', company.id);
 
+  const companyWithAddress = await enrichCompanyWithAddress(company);
+
   const payload = {
-    hubspotRecord: company,
+    hubspotRecord: companyWithAddress,
   };
 
   return callNetSuite('POST', process.env.NS_RESTLET_CUSTOMER_URL, payload);
 }
 
+
+// HubSpot Company → NetSuite Customer (UPDATE)
 // HubSpot Company → NetSuite Customer (UPDATE)
 export async function updateCustomerInNS(company) {
   log('Updating Customer in NetSuite (PUT):', company.id);
 
+  const companyWithAddress = await enrichCompanyWithAddress(company);
+
   const payload = {
-    hubspotRecord: company,
+    hubspotRecord: companyWithAddress,
   };
 
   return callNetSuite('PUT', process.env.NS_RESTLET_CUSTOMER_URL, payload);
 }
+
 
 // HubSpot Product → NetSuite Item (still POST, placeholder for later)
 export async function createItemInNS(product) {
@@ -439,6 +528,7 @@ export async function createSalesOrderInNS(deal) {
 
   return callNetSuite('POST', process.env.NS_RESTLET_SALESORDER_URL, payload);
 }
+
 
 
 
