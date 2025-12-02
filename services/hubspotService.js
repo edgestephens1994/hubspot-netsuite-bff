@@ -8,7 +8,7 @@ import {
 } from './netsuiteService.js';
 
 const HUBSPOT_TOKEN = process.env.HUBSPOT_ACCESS_TOKEN;
-
+const netsuiteService = require("./netsuiteService");
 const HUBSPOT_OBJECT_TYPE_MAP = {
   company: 'companies',
   deal: 'deals',
@@ -64,20 +64,27 @@ async function handleDealUpdate(event) {
   const dealId = event.objectId || event.dealId;
   const newStage = event.properties?.dealstage || event.newValue;
 
-  // 1) On deal creation: you probably already call createQuoteInNetSuite(dealId, ...)
+  console.log("HubSpot deal updated:", { dealId, newStage });
 
-  // 2) On stage → Closed Won
-  const CLOSED_WON_STAGE = 'closedwon'; // use the exact internal value from HubSpot
+  // 1. CREATE QUOTE ON DEAL CREATION
+  if (event.changeType === "CREATED") {
+    console.log(`Deal ${dealId} created → Creating Quote in NetSuite.`);
+    await netsuiteService.createQuoteFromDeal(dealId); // you already have this
+  }
 
-  if (newStage === CLOSED_WON_STAGE) {
+  // 2. TRANSFORM QUOTE → SALES ORDER ON CLOSED WON
+  const CLOSED_WON = "closedwon";  // your internal HubSpot stage value
+
+  if (newStage === CLOSED_WON) {
+    console.log(`Deal ${dealId} is Closed Won → Converting Quote in NetSuite.`);
     try {
-      await convertQuoteToSalesOrder(dealId);
+      await netsuiteService.convertQuoteToSalesOrder(dealId);
     } catch (err) {
-      console.error(`Failed to convert Quote to Sales Order for deal ${dealId}:`, err);
-      // you can also log this into HubSpot or NetSuite as needed
+      console.error("Error converting quote to SO:", err);
     }
   }
 }
+
 
 
 export async function handleHubSpotEvent(event) {
@@ -150,6 +157,7 @@ export async function handleHubSpotEvent(event) {
     return;
   }
 }
+
 
 
 
