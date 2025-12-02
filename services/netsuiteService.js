@@ -274,7 +274,7 @@ async function fetchDealAssociations(dealId, toObjectType) {
 
 
 
-async function convertQuoteToSalesOrder(hubspotDealId) {
+export async function convertQuoteToSalesOrder(hubspotDealId) {
   if (!hubspotDealId) {
     throw new Error('hubspotDealId is required');
   }
@@ -298,9 +298,8 @@ async function convertQuoteToSalesOrder(hubspotDealId) {
   return response.data;
 }
 
-module.exports = {
-  convertQuoteToSalesOrder,
-  // …your other exports
+export default {
+  convertQuoteToSalesOrder
 };
 
 
@@ -561,6 +560,7 @@ export async function createSalesOrderInNS(deal) {
 
   return callNetSuite('POST', process.env.NS_RESTLET_SALESORDER_URL, payload);
 }
+
 
 
 
