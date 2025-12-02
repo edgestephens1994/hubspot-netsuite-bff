@@ -58,6 +58,28 @@ async function fetchHubSpotRecord(apiObjectType, objectId) {
 }
 
 
+// Example in hubspotService.js (or wherever you handle deal updates)
+
+async function handleDealUpdate(event) {
+  const dealId = event.objectId || event.dealId;
+  const newStage = event.properties?.dealstage || event.newValue;
+
+  // 1) On deal creation: you probably already call createQuoteInNetSuite(dealId, ...)
+
+  // 2) On stage → Closed Won
+  const CLOSED_WON_STAGE = 'closedwon'; // use the exact internal value from HubSpot
+
+  if (newStage === CLOSED_WON_STAGE) {
+    try {
+      await convertQuoteToSalesOrder(dealId);
+    } catch (err) {
+      console.error(`Failed to convert Quote to Sales Order for deal ${dealId}:`, err);
+      // you can also log this into HubSpot or NetSuite as needed
+    }
+  }
+}
+
+
 export async function handleHubSpotEvent(event) {
   try {
     log('Raw HubSpot webhook event:', event);
@@ -128,6 +150,7 @@ export async function handleHubSpotEvent(event) {
     return;
   }
 }
+
 
 
 
