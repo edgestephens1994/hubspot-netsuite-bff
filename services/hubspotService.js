@@ -4,11 +4,16 @@ import {
   createCustomerInNS,
   updateCustomerInNS,
   createItemInNS,
-  createSalesOrderInNS
+  createSalesOrderInNS,
+  convertQuoteToSalesOrder,    // 👈 NEW import
 } from './netsuiteService.js';
 
 const HUBSPOT_TOKEN = process.env.HUBSPOT_ACCESS_TOKEN;
-const netsuiteService = require("./netsuiteService");
+
+const CLOSED_WON_STAGE_ID =
+  process.env.HUBSPOT_CLOSED_WON_STAGE_ID || 'closedwon';
+
+
 const HUBSPOT_OBJECT_TYPE_MAP = {
   company: 'companies',
   deal: 'deals',
@@ -104,52 +109,161 @@ export async function handleHubSpotEvent(event) {
     const apiObjectType = HUBSPOT_OBJECT_TYPE_MAP[rawType];
 
     if (!apiObjectType) {
-      log('Unhandled raw object type from webhook:', rawType);
+      log('Unsupported HubSpot object type, skipping.', {
+        rawType,
+        subscriptionType,
+      });
       return;
     }
 
-    const record = await fetchHubSpotRecord(apiObjectType, objectId);
+    // Get the full record from HubSpot so we can see latest properties (including dealstage)
+    const url = `https://api.hubapi.com/crm/v3/objects/${apiObjectType}/${objectId}`;
 
-    log(`Fetched full ${apiObjectType} record from HubSpot:`, record.id);
+    const hsResp = await axios.get(url, {
+      headers: {
+        Authorization: `Bearer ${HUBSPOT_TOKEN}`,
+      },
+      // You can add more properties if you need them
+      params: {
+        properties: [
+          'dealstage',
+          'firstname',
+          'lastname',
+          'email',
+          'phone',
+          'name',
+          'hs_product_id',
+          'quantity',
+          'amount',
+        ].join(','),
+      },
+    });
+
+    const record = hsResp.data || {};
+    log('Fetched full HubSpot record for event', {
+      apiObjectType,
+      id: record.id,
+      rawType,
+      rawEvent,
+    });
+
+    // We’ll reuse this in the deals path
+    const dealId = record.id?.toString();
+    const currentStage = record.properties?.dealstage;
+    const CLOSED_WON_STAGE_ID =
+      process.env.HUBSPOT_CLOSED_WON_STAGE_ID || 'closedwon';
 
     switch (apiObjectType) {
-      case 'companies':
+      /**
+       * COMPANIES → NetSuite Customers
+       */
+      case 'companies': {
         if (rawEvent === 'creation') {
-          // Separate create action
-          return await createCustomerInNS(record);
+          log('Handling company.creation → creating Customer in NetSuite', {
+            companyId: record.id,
+          });
+          await createCustomerInNS(record);
         } else {
-          // Any non-creation company event treated as "edit" for now
-          return await updateCustomerInNS(record);
+          log('Handling company update → updating Customer in NetSuite', {
+            companyId: record.id,
+            rawEvent,
+          });
+          await updateCustomerInNS(record);
         }
+        return;
+      }
 
-      case 'products':
-        // TODO: later handle product.creation vs propertyChange similarly
-        return await createItemInNS(record);
-
-      case 'deals':
-      if (rawEvent === 'creation') {
-        log('Handling deal.creation → creating Sales Order in NetSuite', {
-          dealId: record.id,
-          subscriptionType,
-        });
-        return await createSalesOrderInNS(record);
-      } else {
-        log('Skipping Sales Order creation for non-creation deal event', {
-          dealId: record.id,
-          subscriptionType,
+      /**
+       * CONTACTS → (optional) You can wire these if you want later
+       */
+      case 'contacts': {
+        log('Received contact event (no NS action wired yet)', {
+          contactId: record.id,
           rawEvent,
         });
         return;
       }
 
-      default:
-        log('No handler implemented for apiObjectType:', apiObjectType);
+      /**
+       * PRODUCTS → NetSuite Items
+       */
+      case 'products': {
+        if (rawEvent === 'creation') {
+          log('Handling product.creation → creating Item in NetSuite', {
+            productId: record.id,
+          });
+          await createItemInNS(record);
+        } else {
+          log('Skipping non-creation product event', {
+            productId: record.id,
+            rawEvent,
+          });
+        }
+        return;
+      }
+
+      /**
+       * DEALS → NS Quote on creation, then transform to SO when Closed Won
+       */
+      case 'deals': {
+        // 1) On deal creation → create the Quote in NetSuite
+        if (rawEvent === 'creation') {
+          log('Handling deal.creation → creating Quote in NetSuite', {
+            dealId,
+          });
+
+          // This already calls your RESTlet that now creates a Quote (Estimate)
+          await createSalesOrderInNS(record);
+          return;
+        }
+
+        // 2) On any non-creation event, check if the stage is Closed Won
+        if (currentStage === CLOSED_WON_STAGE_ID) {
+          const externalId = `HSDEAL_${dealId}`;
+
+          log('Deal moved to Closed Won → converting Quote to Sales Order in NetSuite', {
+            dealId,
+            currentStage,
+            externalId,
+            rawEvent,
+          });
+
+          try {
+            // This should send { hubspotDealId, externalId } to your NS transform RESTlet
+            await convertQuoteToSalesOrder(dealId);
+          } catch (err) {
+            log('Error converting Quote to Sales Order in NetSuite', {
+              dealId,
+              error: err.message || err,
+            });
+          }
+
+          return;
+        }
+
+        // 3) All other deal events (not creation, not Closed Won) → ignore
+        log('Skipping deal event (not creation and not Closed Won)', {
+          dealId,
+          currentStage,
+          rawEvent,
+        });
+        return;
+      }
+
+      default: {
+        log('No handler implemented for this HubSpot object type', {
+          apiObjectType,
+          rawType,
+          rawEvent,
+        });
+        return;
+      }
     }
   } catch (err) {
     if (err.response) {
-      log('HubSpot API error:', {
+      log('HubSpot handler error response from HubSpot:', {
         status: err.response.status,
-        data: err.response.data
+        data: err.response.data,
       });
     } else {
       log('HubSpot handler error:', err.message || err);
@@ -157,6 +271,7 @@ export async function handleHubSpotEvent(event) {
     return;
   }
 }
+
 
 
 
