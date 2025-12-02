@@ -272,6 +272,36 @@ async function fetchDealAssociations(dealId, toObjectType) {
   return results;
 }
 
+
+
+async function convertQuoteToSalesOrder(hubspotDealId) {
+  if (!hubspotDealId) {
+    throw new Error('hubspotDealId is required');
+  }
+
+  const payload = { hubspotDealId };
+
+  // You likely already have a generic HTTPS client for NetSuite RESTlets.
+  // Reuse that here.
+  const url = process.env.NS_CONVERT_QUOTE_RESTLET_URL; // external URL from NetSuite deployment
+
+  const headers = {
+    'Content-Type': 'application/json',
+    // plus your NS auth headers (Token-based, OAuth, or NLAuth)
+  };
+
+  const response = await axios.post(url, payload, { headers });
+
+  if (response.data.status !== 'success') {
+    console.error('Error converting quote to SO in NetSuite:', response.data);
+    throw new Error(response.data.message || 'Unknown error converting quote to SO');
+  }
+
+  console.log('Sales Order created from Quote:', response.data);
+  return response.data; // contains salesOrderId, estimateId, etc.
+}
+
+
 // 🔧 Helper: fetch Product SKU (NetSuite item internal ID) from HubSpot Product
 async function fetchProductSku(productId) {
   if (!HUBSPOT_TOKEN) {
@@ -528,6 +558,7 @@ export async function createSalesOrderInNS(deal) {
 
   return callNetSuite('POST', process.env.NS_RESTLET_SALESORDER_URL, payload);
 }
+
 
 
 
