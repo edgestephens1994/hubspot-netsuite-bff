@@ -273,34 +273,28 @@ async function fetchDealAssociations(dealId, toObjectType) {
 }
 
 
-
+// 🌟 HubSpot Deal (Closed Won) → NetSuite: convert existing Quote → Sales Order
 export async function convertQuoteToSalesOrder(hubspotDealId) {
   if (!hubspotDealId) {
-    throw new Error('hubspotDealId is required');
+    throw new Error('hubspotDealId is required (convertQuoteToSalesOrder)');
   }
 
-  const payload = { hubspotDealId };
+  const externalId = `HSDEAL_${hubspotDealId}`;
 
-  const url = process.env.NS_RESTLET_CONVERT_QUOTE_URL;
-
-  const headers = {
-    'Content-Type': 'application/json',
-    'Authorization': generateNetSuiteAuthHeader(),  // whatever you already use
+  const payload = {
+    hubspotDealId,
+    externalId, // 👈 this is the external ID you wanted sent to the RESTlet
   };
 
-  const response = await axios.post(url, payload, { headers });
+  log(
+    '🔁 Converting NetSuite Quote → Sales Order via RESTlet:',
+    JSON.stringify(payload, null, 2)
+  );
 
-  if (response.data.status !== 'success') {
-    console.error('NetSuite conversion error:', response.data);
-    throw new Error(response.data.message || 'Unknown NetSuite error');
-  }
-
-  return response.data;
+  // Uses your existing OAuth / callNetSuite helper
+  return callNetSuite('POST', process.env.NS_RESTLET_CONVERT_QUOTE_URL, payload);
 }
 
-export default {
-  convertQuoteToSalesOrder
-};
 
 
 
@@ -560,6 +554,7 @@ export async function createSalesOrderInNS(deal) {
 
   return callNetSuite('POST', process.env.NS_RESTLET_SALESORDER_URL, payload);
 }
+
 
 
 
